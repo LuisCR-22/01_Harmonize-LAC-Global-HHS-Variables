@@ -1,0 +1,1035 @@
+/*====================================================================
+Project: Poverty Transitions Analysis using Harmonized LAC Panel Data
+Author:	Luis Castellanos (lcastellanosrodr@worldbank.org)
+Team:	Stats Team - World Bank	
+Creation Date:		2025/11/10
+Last modification: 	2025/11/10
+====================================================================
+PURPOSE: This script analyzes poverty transitions across different poverty
+         lines using harmonized panel household survey data from LAC countries.
+         Unlike the López-Calva & Ortiz-Juarez vulnerability methodology,
+         this focuses exclusively on transition matrices and mobility patterns.
+
+METHODOLOGY:
+- Analyzes poverty transitions using multiple absolute poverty lines:
+  * LIC line: $3.00/day (2021 PPP)
+  * LMC line: $4.20/day (2021 PPP)  
+  * UMC line: $8.30/day (2021 PPP)
+- Analyzes relative poverty using 50% of median income
+- Analyzes welfare mobility using quintile transitions
+- All analyses use survey weights for population representativeness
+
+OUTPUT:
+- Excel file with separate sheets for each transition matrix:
+  * Summary - Dataset info and poverty line definitions
+  * Diagnostic_Poverty_Rates - Poverty rates comparison (full vs balanced panel)
+  * LIC_3_00 (3.00)
+  * LMC_4_20 (4.20)
+  * UMC_8_30 (8.30)
+  * Relative_50pct_t0 (50% of t0 median)
+  * Relative_50pct_t1 (50% of t1 median)
+  * Quintiles
+
+STRUCTURE:
+1. Setup and configuration
+2. Load and prepare harmonized panel data
+2B. Diagnostic: Poverty rates comparison (full vs balanced panel)
+3. Reshape data for transition analysis
+4. Absolute poverty transitions (LIC, LMC, UMC)
+5. Relative poverty transitions (50% of median - both t0 and t1)
+6. Welfare quintile transitions
+7. Export results to Excel
+*=================================================================*/
+
+clear all
+set more off
+set maxvar 10000
+
+**# ==============================================================================
+**# 0. SETUP AND CONFIGURATION
+**# ==============================================================================
+
+* Define paths (MODIFY THESE AS NEEDED)
+global input_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Dta\PER"
+global output_path "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Excel\01_Poverty_transitions"
+
+* Create output directory if it doesn't exist
+cap mkdir "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Excel"
+cap mkdir "$output_path"
+
+* Define input panel dataset (MODIFY AS NEEDED)
+global input_panel "01_PER_2019-2023_panel.dta"
+
+* Define poverty lines in daily USD 2021 PPP
+global pov_line_lic = 3.00
+global pov_line_lmc = 4.20
+global pov_line_umc = 8.30
+
+* Define relative poverty threshold (% of median)
+global relative_threshold = 0.50
+
+* Output file name
+global output_file "01_PER_Pov_transitions_2019_2023.xlsx"
+
+* Note on welfare conversion:
+* We convert annual welfare to daily (divide by 365) because poverty lines are 
+* internationally standardized in daily terms (e.g., $3.00/day, $8.30/day).
+* This makes comparisons more intuitive and aligns with global poverty monitoring standards.
+
+noi di ""
+noi di "=== POVERTY TRANSITIONS ANALYSIS ==="
+noi di "Dataset: $input_panel"
+noi di "LIC poverty line: $" %4.2f $pov_line_lic " per day"
+noi di "LMC poverty line: $" %4.2f $pov_line_lmc " per day"
+noi di "UMC poverty line: $" %4.2f $pov_line_umc " per day"
+noi di "Relative poverty: " %3.0f ($relative_threshold * 100) "% of median income (analyzed for both t0 and t1 medians)"
+noi di ""
+
+**# ==============================================================================
+**# 1. LOAD AND PREPARE HARMONIZED PANEL DATA
+**# ==============================================================================
+
+use "$input_data/$input_panel", clear
+
+noi di "Raw data loaded. Total observations: " _N
+
+* Convert annual welfare to daily for poverty line comparisons
+* welfare is annual income per capita in USD 2021 PPP
+gen welfare_daily = welfare / 365
+label var welfare_daily "Daily income per capita, USD 2021 PPP"
+
+* Verify we have two time periods
+tab time, missing
+qui levelsof time, local(time_periods)
+local n_periods: word count `time_periods'
+assert `n_periods' == 2
+
+* Store time period labels for later use
+qui sum ano if time == 0
+local year_t0 = r(mean)
+qui sum ano if time == 1  
+local year_t1 = r(mean)
+
+noi di ""
+noi di "Time periods identified: `year_t0' (t0) and `year_t1' (t1)"
+
+**# ==============================================================================
+**# 2B. DIAGNOSTIC: POVERTY RATES COMPARISON
+**# ==============================================================================
+
+noi di "=== CALCULATING POVERTY RATES FOR DIAGNOSTIC PURPOSES ==="
+noi di ""
+
+* Store results for later export
+tempname pov_rates_matrix
+
+* Initialize matrix to store poverty rates
+* Columns: Line_type Year Full_sample_rate Balanced_panel_rate Full_sample_N Balanced_panel_N
+matrix `pov_rates_matrix' = J(8, 6, .)
+
+local row = 1
+
+* Loop through each poverty line
+foreach line in lic lmc umc {
+    
+    if "`line'" == "lic" {
+        local line_value = $pov_line_lic
+        local line_name "LIC"
+    }
+    else if "`line'" == "lmc" {
+        local line_value = $pov_line_lmc
+        local line_name "LMC"
+    }
+    else if "`line'" == "umc" {
+        local line_value = $pov_line_umc
+        local line_name "UMC"
+    }
+    
+    * Loop through each time period
+    forvalues t = 0/1 {
+        
+        preserve
+        
+        * Keep only the specific time period
+        keep if time == `t'
+        
+        * Get the year
+        qui sum ano
+        local year = r(mean)
+        
+        * Create poverty indicator
+        gen poor = (welfare_daily < `line_value') if !missing(welfare_daily)
+        
+        * Calculate poverty rate for FULL SAMPLE (cohh==1, all observations)
+        qui sum poor [aw=iweight] if cohh == 1 & !missing(welfare_daily)
+        local pov_rate_full = r(mean) * 100
+        qui count if cohh == 1 & !missing(poor) & !missing(welfare_daily)
+        local n_full = r(N)
+        
+        * Calculate poverty rate for BALANCED PANEL (balanced_panel==1 & cohh==1)
+        qui sum poor [aw=iweight] if balanced_panel == 1 & cohh == 1 & !missing(welfare_daily)
+        local pov_rate_panel = r(mean) * 100
+        qui count if balanced_panel == 1 & cohh == 1 & !missing(poor) & !missing(welfare_daily)
+        local n_panel = r(N)
+        
+        noi di "`line_name' (`line_value') - Year `year':"
+        noi di "  Full sample: " %5.2f `pov_rate_full' "% (N=" %7.0fc `n_full' ")"
+        noi di "  Balanced panel: " %5.2f `pov_rate_panel' "% (N=" %7.0fc `n_panel' ")"
+        
+        * Store in matrix (encoding line type: 1=LIC, 2=LMC, 3=UMC)
+        local line_code = cond("`line'"=="lic", 1, cond("`line'"=="lmc", 2, 3))
+        matrix `pov_rates_matrix'[`row', 1] = `line_code'
+        matrix `pov_rates_matrix'[`row', 2] = `year'
+        matrix `pov_rates_matrix'[`row', 3] = `pov_rate_full'
+        matrix `pov_rates_matrix'[`row', 4] = `pov_rate_panel'
+        matrix `pov_rates_matrix'[`row', 5] = `n_full'
+        matrix `pov_rates_matrix'[`row', 6] = `n_panel'
+        
+        local ++row
+        
+        restore
+    }
+    
+    noi di ""
+}
+
+* Calculate relative poverty rates (50% of median) using t0 median
+preserve
+keep if time == 0 & cohh == 1 & !missing(welfare_daily)
+qui sum welfare_daily [aw=iweight], detail
+local rel_line_t0 = $relative_threshold * r(p50)
+restore
+
+noi di "Relative poverty line (50% of t0 median): $" %5.2f `rel_line_t0' "/day"
+
+forvalues t = 0/1 {
+    preserve
+    keep if time == `t'
+    qui sum ano
+    local year = r(mean)
+    
+    gen poor_rel = (welfare_daily < `rel_line_t0') if !missing(welfare_daily)
+    
+    qui sum poor_rel [aw=iweight] if cohh == 1 & !missing(welfare_daily)
+    local pov_rate_full = r(mean) * 100
+    qui count if cohh == 1 & !missing(poor_rel) & !missing(welfare_daily)
+    local n_full = r(N)
+    
+    qui sum poor_rel [aw=iweight] if balanced_panel == 1 & cohh == 1 & !missing(welfare_daily)
+    local pov_rate_panel = r(mean) * 100
+    qui count if balanced_panel == 1 & cohh == 1 & !missing(poor_rel) & !missing(welfare_daily)
+    local n_panel = r(N)
+    
+    noi di "Relative (t0 median) - Year `year':"
+    noi di "  Full sample: " %5.2f `pov_rate_full' "% (N=" %7.0fc `n_full' ")"
+    noi di "  Balanced panel: " %5.2f `pov_rate_panel' "% (N=" %7.0fc `n_panel' ")"
+    
+    matrix `pov_rates_matrix'[`row', 1] = 4
+    matrix `pov_rates_matrix'[`row', 2] = `year'
+    matrix `pov_rates_matrix'[`row', 3] = `pov_rate_full'
+    matrix `pov_rates_matrix'[`row', 4] = `pov_rate_panel'
+    matrix `pov_rates_matrix'[`row', 5] = `n_full'
+    matrix `pov_rates_matrix'[`row', 6] = `n_panel'
+    
+    local ++row
+    restore
+}
+
+noi di ""
+
+* Create dataset for export
+preserve
+clear
+set obs 8
+
+gen str30 poverty_line = ""
+gen year = .
+gen full_sample_rate = .
+gen balanced_panel_rate = .
+gen full_sample_n = .
+gen balanced_panel_n = .
+
+forval i = 1/8 {
+    local line_code = `pov_rates_matrix'[`i', 1]
+    
+    if `line_code' == 1 {
+        replace poverty_line = "LIC ($3.00/day)" in `i'
+    }
+    else if `line_code' == 2 {
+        replace poverty_line = "LMC ($4.20/day)" in `i'
+    }
+    else if `line_code' == 3 {
+        replace poverty_line = "UMC ($8.30/day)" in `i'
+    }
+    else if `line_code' == 4 {
+        replace poverty_line = "Relative (50% of t0 median)" in `i'
+    }
+    
+    replace year = `pov_rates_matrix'[`i', 2] in `i'
+    replace full_sample_rate = `pov_rates_matrix'[`i', 3] in `i'
+    replace balanced_panel_rate = `pov_rates_matrix'[`i', 4] in `i'
+    replace full_sample_n = `pov_rates_matrix'[`i', 5] in `i'
+    replace balanced_panel_n = `pov_rates_matrix'[`i', 6] in `i'
+}
+
+tempfile diagnostic_rates
+save `diagnostic_rates'
+restore
+
+noi di "Diagnostic poverty rates calculated"
+noi di ""
+
+**# ==============================================================================
+**# 2C. FILTER TO BALANCED PANEL FOR TRANSITION ANALYSIS
+**# ==============================================================================
+
+* NOW filter to balanced panel for transition analysis
+keep if balanced_panel == 1
+
+noi di "Balanced panel observations: " _N
+
+* Verify welfare variable has no missing values for balanced panel
+qui count if missing(welfare_daily)
+if r(N) > 0 {
+    noi di "WARNING: `r(N)' observations with missing welfare. These will be excluded."
+}
+
+* Count unique individuals and households
+qui count if time == 0
+local n_individuals = r(N)
+preserve
+keep if time == 0
+qui tab household_id
+local n_households = r(r)
+restore
+
+noi di "Sample size: `n_individuals' individuals in `n_households' households"
+noi di ""
+
+**# ==============================================================================
+**# 3. RESHAPE DATA FOR TRANSITION ANALYSIS
+**# ==============================================================================
+
+* Keep only essential variables - NOW INCLUDING cohh
+keep indiv_id household_id time ano welfare welfare_daily iweight balanced_panel cohh
+
+* Reshape to wide format for transition analysis
+reshape wide ano welfare welfare_daily iweight cohh, i(indiv_id) j(time)
+
+* Rename for clarity
+rename welfare0 welfare_t0
+rename welfare1 welfare_t1
+rename welfare_daily0 welfare_daily_t0
+rename welfare_daily1 welfare_daily_t1
+rename iweight0 weight
+rename cohh0 cohh_t0
+rename cohh1 cohh_t1
+
+* Clean up
+drop iweight1 ano0 ano1
+
+label var welfare_t0 "Annual welfare at t0 (USD 2021 PPP)"
+label var welfare_t1 "Annual welfare at t1 (USD 2021 PPP)"
+label var welfare_daily_t0 "Daily welfare at t0 (USD 2021 PPP)"
+label var welfare_daily_t1 "Daily welfare at t1 (USD 2021 PPP)"
+label var weight "Individual survey weight (from t0)"
+label var cohh_t0 "Head of household indicator at t0"
+
+* Apply filters: cohh==1 at t0 and non-missing welfare
+keep if cohh_t0 == 1 & !missing(welfare_daily_t0) & !missing(welfare_daily_t1)
+
+noi di "Data reshaped to wide format for transition analysis"
+noi di "Final analytical sample: " _N " individuals (cohh==1 with non-missing welfare)"
+noi di ""
+
+**# ==============================================================================
+**# 4. ABSOLUTE POVERTY TRANSITIONS - LIC LINE ($3.00/day)
+**# ==============================================================================
+
+noi di "=== ANALYZING LIC POVERTY TRANSITIONS ($3.00/day) ==="
+
+* Define poverty status at each period
+gen poor_lic_t0 = (welfare_daily_t0 < $pov_line_lic)
+gen poor_lic_t1 = (welfare_daily_t1 < $pov_line_lic)
+
+* Create transition categories
+gen transition_lic = .
+replace transition_lic = 1 if poor_lic_t0 == 0 & poor_lic_t1 == 0  // Non-poor → Non-poor
+replace transition_lic = 2 if poor_lic_t0 == 1 & poor_lic_t1 == 0  // Poor → Non-poor (Escaping)
+replace transition_lic = 3 if poor_lic_t0 == 0 & poor_lic_t1 == 1  // Non-poor → Poor (Falling)
+replace transition_lic = 4 if poor_lic_t0 == 1 & poor_lic_t1 == 1  // Poor → Poor (Chronic)
+
+label define transition_lbl 1 "Non-poor → Non-poor" 2 "Poor → Non-poor (Escape)" ///
+    3 "Non-poor → Poor (Fall)" 4 "Poor → Poor (Chronic)"
+label values transition_lic transition_lbl
+
+* Calculate weighted transition shares
+preserve
+
+* Create transition matrix
+gen status_t0_lic = 1 if poor_lic_t0 == 0
+replace status_t0_lic = 2 if poor_lic_t0 == 1
+gen status_t1_lic = 1 if poor_lic_t1 == 0
+replace status_t1_lic = 2 if poor_lic_t1 == 1
+
+label define status_lbl 1 "Non-poor" 2 "Poor"
+label values status_t0_lic status_lbl
+label values status_t1_lic status_lbl
+
+* Calculate weighted cross-tabulation
+tab status_t0_lic status_t1_lic [aw=weight], matcell(trans_lic_freq) matrow(rows) matcol(cols)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_lic_pct = trans_lic_freq
+local total_weight = trans_lic_freq[1,1] + trans_lic_freq[1,2] + trans_lic_freq[2,1] + trans_lic_freq[2,2]
+forval i = 1/2 {
+    forval j = 1/2 {
+        mat trans_lic_pct[`i',`j'] = 100 * trans_lic_freq[`i',`j'] / `total_weight'
+    }
+}
+
+* Display results
+noi di ""
+noi di "LIC Transition Matrix (% of total sample):"
+noi di "                    t1: Non-poor    t1: Poor"
+noi mat list trans_lic_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = trans_lic_pct[1,1] + trans_lic_pct[1,2] + trans_lic_pct[2,1] + trans_lic_pct[2,2]
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 5
+
+gen str40 variable = ""
+gen non_poor_t1 = .
+gen poor_t1 = .
+gen str80 notes = ""
+
+replace variable = "Status at t0 → Status at t1" in 1
+replace variable = "Non-poor → Non-poor" in 2
+replace variable = "Non-poor → Poor (Fall into poverty)" in 3
+replace variable = "Poor → Non-poor (Escape poverty)" in 4
+replace variable = "Poor → Poor (Chronic poverty)" in 5
+
+replace non_poor_t1 = trans_lic_pct[1,1] in 2
+replace poor_t1 = trans_lic_pct[1,2] in 3
+replace non_poor_t1 = trans_lic_pct[2,1] in 4
+replace poor_t1 = trans_lic_pct[2,2] in 5
+
+replace notes = "LIC Poverty Line: $3.00/day (2021 PPP)" in 1
+replace notes = "Values represent % of total sample (cohh==1 with non-missing welfare)" in 2
+replace notes = "Period: `year_t0'-`year_t1'" in 3
+replace notes = "Sample: `n_individuals' individuals, `n_households' households" in 4
+
+tempfile lic_results
+save `lic_results'
+
+restore
+
+noi di "LIC transitions calculated"
+noi di ""
+
+**# ==============================================================================
+**# 5. ABSOLUTE POVERTY TRANSITIONS - LMC LINE ($4.20/day)
+**# ==============================================================================
+
+noi di "=== ANALYZING LMC POVERTY TRANSITIONS ($4.20/day) ==="
+
+* Define poverty status
+gen poor_lmc_t0 = (welfare_daily_t0 < $pov_line_lmc)
+gen poor_lmc_t1 = (welfare_daily_t1 < $pov_line_lmc)
+
+preserve
+
+* Create status variables
+gen status_t0_lmc = 1 if poor_lmc_t0 == 0
+replace status_t0_lmc = 2 if poor_lmc_t0 == 1
+gen status_t1_lmc = 1 if poor_lmc_t1 == 0
+replace status_t1_lmc = 2 if poor_lmc_t1 == 1
+
+label values status_t0_lmc status_lbl
+label values status_t1_lmc status_lbl
+
+* Calculate weighted proportions
+tab status_t0_lmc status_t1_lmc [aw=weight], matcell(trans_lmc_freq)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_lmc_pct = trans_lmc_freq
+local total_weight = trans_lmc_freq[1,1] + trans_lmc_freq[1,2] + trans_lmc_freq[2,1] + trans_lmc_freq[2,2]
+forval i = 1/2 {
+    forval j = 1/2 {
+        mat trans_lmc_pct[`i',`j'] = 100 * trans_lmc_freq[`i',`j'] / `total_weight'
+    }
+}
+
+noi di ""
+noi di "LMC Transition Matrix (% of total sample):"
+noi mat list trans_lmc_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = trans_lmc_pct[1,1] + trans_lmc_pct[1,2] + trans_lmc_pct[2,1] + trans_lmc_pct[2,2]
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 5
+
+gen str40 variable = ""
+gen non_poor_t1 = .
+gen poor_t1 = .
+gen str80 notes = ""
+
+replace variable = "Status at t0 → Status at t1" in 1
+replace variable = "Non-poor → Non-poor" in 2
+replace variable = "Non-poor → Poor (Fall into poverty)" in 3
+replace variable = "Poor → Non-poor (Escape poverty)" in 4
+replace variable = "Poor → Poor (Chronic poverty)" in 5
+
+replace non_poor_t1 = trans_lmc_pct[1,1] in 2
+replace poor_t1 = trans_lmc_pct[1,2] in 3
+replace non_poor_t1 = trans_lmc_pct[2,1] in 4
+replace poor_t1 = trans_lmc_pct[2,2] in 5
+
+replace notes = "LMC Poverty Line: $4.20/day (2021 PPP)" in 1
+replace notes = "Values represent % of total sample (cohh==1 with non-missing welfare)" in 2
+
+tempfile lmc_results
+save `lmc_results'
+
+restore
+
+noi di "LMC transitions calculated"
+noi di ""
+
+**# ==============================================================================
+**# 6. ABSOLUTE POVERTY TRANSITIONS - UMC LINE ($8.30/day)
+**# ==============================================================================
+
+noi di "=== ANALYZING UMC POVERTY TRANSITIONS ($8.30/day) ==="
+
+* Define poverty status
+gen poor_umc_t0 = (welfare_daily_t0 < $pov_line_umc)
+gen poor_umc_t1 = (welfare_daily_t1 < $pov_line_umc)
+
+preserve
+
+* Create status variables
+gen status_t0_umc = 1 if poor_umc_t0 == 0
+replace status_t0_umc = 2 if poor_umc_t0 == 1
+gen status_t1_umc = 1 if poor_umc_t1 == 0
+replace status_t1_umc = 2 if poor_umc_t1 == 1
+
+label values status_t0_umc status_lbl
+label values status_t1_umc status_lbl
+
+* Calculate weighted proportions
+tab status_t0_umc status_t1_umc [aw=weight], matcell(trans_umc_freq)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_umc_pct = trans_umc_freq
+local total_weight = trans_umc_freq[1,1] + trans_umc_freq[1,2] + trans_umc_freq[2,1] + trans_umc_freq[2,2]
+forval i = 1/2 {
+    forval j = 1/2 {
+        mat trans_umc_pct[`i',`j'] = 100 * trans_umc_freq[`i',`j'] / `total_weight'
+    }
+}
+
+noi di ""
+noi di "UMC Transition Matrix (% of total sample):"
+noi mat list trans_umc_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = trans_umc_pct[1,1] + trans_umc_pct[1,2] + trans_umc_pct[2,1] + trans_umc_pct[2,2]
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 5
+
+gen str40 variable = ""
+gen non_poor_t1 = .
+gen poor_t1 = .
+gen str80 notes = ""
+
+replace variable = "Status at t0 → Status at t1" in 1
+replace variable = "Non-poor → Non-poor" in 2
+replace variable = "Non-poor → Poor (Fall into poverty)" in 3
+replace variable = "Poor → Non-poor (Escape poverty)" in 4
+replace variable = "Poor → Poor (Chronic poverty)" in 5
+
+replace non_poor_t1 = trans_umc_pct[1,1] in 2
+replace poor_t1 = trans_umc_pct[1,2] in 3
+replace non_poor_t1 = trans_umc_pct[2,1] in 4
+replace poor_t1 = trans_umc_pct[2,2] in 5
+
+replace notes = "UMC Poverty Line: $8.30/day (2021 PPP)" in 1
+replace notes = "Values represent % of total sample (cohh==1 with non-missing welfare)" in 2
+
+tempfile umc_results
+save `umc_results'
+
+restore
+
+noi di "UMC transitions calculated"
+noi di ""
+
+**# ==============================================================================
+**# 7. RELATIVE POVERTY TRANSITIONS (50% of median)
+**# ==============================================================================
+
+**# 7.1 Using t0 median as reference
+
+noi di "=== ANALYZING RELATIVE POVERTY TRANSITIONS (50% of t0 median) ==="
+
+* Calculate median income at t0 (using survey weights)
+qui sum welfare_daily_t0 [aw=weight], detail
+local median_t0 = r(p50)
+local relative_line_t0 = $relative_threshold * `median_t0'
+
+noi di "Median income at t0: $" %5.2f `median_t0' " per day"
+noi di "Relative poverty line (50% of t0 median): $" %5.2f `relative_line_t0' " per day"
+
+* Define relative poverty status using t0 median
+gen poor_rel_t0_ref = (welfare_daily_t0 < `relative_line_t0')
+gen poor_rel_t1_t0ref = (welfare_daily_t1 < `relative_line_t0')
+
+preserve
+
+* Create status variables
+gen status_t0_rel_t0ref = 1 if poor_rel_t0_ref == 0
+replace status_t0_rel_t0ref = 2 if poor_rel_t0_ref == 1
+gen status_t1_rel_t0ref = 1 if poor_rel_t1_t0ref == 0
+replace status_t1_rel_t0ref = 2 if poor_rel_t1_t0ref == 1
+
+label values status_t0_rel_t0ref status_lbl
+label values status_t1_rel_t0ref status_lbl
+
+* Calculate weighted proportions
+tab status_t0_rel_t0ref status_t1_rel_t0ref [aw=weight], matcell(trans_rel_t0_freq)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_rel_t0_pct = trans_rel_t0_freq
+local total_weight = trans_rel_t0_freq[1,1] + trans_rel_t0_freq[1,2] + trans_rel_t0_freq[2,1] + trans_rel_t0_freq[2,2]
+forval i = 1/2 {
+    forval j = 1/2 {
+        mat trans_rel_t0_pct[`i',`j'] = 100 * trans_rel_t0_freq[`i',`j'] / `total_weight'
+    }
+}
+
+noi di ""
+noi di "Relative Poverty Transition Matrix using t0 median (% of total sample):"
+noi mat list trans_rel_t0_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = trans_rel_t0_pct[1,1] + trans_rel_t0_pct[1,2] + trans_rel_t0_pct[2,1] + trans_rel_t0_pct[2,2]
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 5
+
+gen str40 variable = ""
+gen non_poor_t1 = .
+gen poor_t1 = .
+gen str80 notes = ""
+
+replace variable = "Status at t0 → Status at t1" in 1
+replace variable = "Non-poor → Non-poor" in 2
+replace variable = "Non-poor → Poor (Fall into poverty)" in 3
+replace variable = "Poor → Non-poor (Escape poverty)" in 4
+replace variable = "Poor → Poor (Chronic poverty)" in 5
+
+replace non_poor_t1 = trans_rel_t0_pct[1,1] in 2
+replace poor_t1 = trans_rel_t0_pct[1,2] in 3
+replace non_poor_t1 = trans_rel_t0_pct[2,1] in 4
+replace poor_t1 = trans_rel_t0_pct[2,2] in 5
+
+replace notes = "Relative Poverty Line: 50% of median income at t0" in 1
+replace notes = "Line value: $" + string(`relative_line_t0', "%5.2f") + "/day (2021 PPP)" in 2
+
+tempfile rel_t0_results
+save `rel_t0_results'
+
+restore
+
+noi di "Relative poverty transitions (t0 median) calculated"
+noi di ""
+
+**# 7.2 Using t1 median as reference
+
+noi di "=== ANALYZING RELATIVE POVERTY TRANSITIONS (50% of t1 median) ==="
+
+* Calculate median income at t1 (using survey weights)
+qui sum welfare_daily_t1 [aw=weight], detail
+local median_t1 = r(p50)
+local relative_line_t1 = $relative_threshold * `median_t1'
+
+noi di "Median income at t1: $" %5.2f `median_t1' " per day"
+noi di "Relative poverty line (50% of t1 median): $" %5.2f `relative_line_t1' " per day"
+
+* Define relative poverty status using t1 median
+gen poor_rel_t0_t1ref = (welfare_daily_t0 < `relative_line_t1')
+gen poor_rel_t1_ref = (welfare_daily_t1 < `relative_line_t1')
+
+preserve
+
+* Create status variables
+gen status_t0_rel_t1ref = 1 if poor_rel_t0_t1ref == 0
+replace status_t0_rel_t1ref = 2 if poor_rel_t0_t1ref == 1
+gen status_t1_rel_t1ref = 1 if poor_rel_t1_ref == 0
+replace status_t1_rel_t1ref = 2 if poor_rel_t1_ref == 1
+
+label values status_t0_rel_t1ref status_lbl
+label values status_t1_rel_t1ref status_lbl
+
+* Calculate weighted proportions
+tab status_t0_rel_t1ref status_t1_rel_t1ref [aw=weight], matcell(trans_rel_t1_freq)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_rel_t1_pct = trans_rel_t1_freq
+local total_weight = trans_rel_t1_freq[1,1] + trans_rel_t1_freq[1,2] + trans_rel_t1_freq[2,1] + trans_rel_t1_freq[2,2]
+forval i = 1/2 {
+    forval j = 1/2 {
+        mat trans_rel_t1_pct[`i',`j'] = 100 * trans_rel_t1_freq[`i',`j'] / `total_weight'
+    }
+}
+
+noi di ""
+noi di "Relative Poverty Transition Matrix using t1 median (% of total sample):"
+noi mat list trans_rel_t1_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = trans_rel_t1_pct[1,1] + trans_rel_t1_pct[1,2] + trans_rel_t1_pct[2,1] + trans_rel_t1_pct[2,2]
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 5
+
+gen str40 variable = ""
+gen non_poor_t1 = .
+gen poor_t1 = .
+gen str80 notes = ""
+
+replace variable = "Status at t0 → Status at t1" in 1
+replace variable = "Non-poor → Non-poor" in 2
+replace variable = "Non-poor → Poor (Fall into poverty)" in 3
+replace variable = "Poor → Non-poor (Escape poverty)" in 4
+replace variable = "Poor → Poor (Chronic poverty)" in 5
+
+replace non_poor_t1 = trans_rel_t1_pct[1,1] in 2
+replace poor_t1 = trans_rel_t1_pct[1,2] in 3
+replace non_poor_t1 = trans_rel_t1_pct[2,1] in 4
+replace poor_t1 = trans_rel_t1_pct[2,2] in 5
+
+replace notes = "Relative Poverty Line: 50% of median income at t1" in 1
+replace notes = "Line value: $" + string(`relative_line_t1', "%5.2f") + "/day (2021 PPP)" in 2
+
+tempfile rel_t1_results
+save `rel_t1_results'
+
+restore
+
+noi di "Relative poverty transitions (t1 median) calculated"
+noi di ""
+
+**# ==============================================================================
+**# 8. WELFARE QUINTILE TRANSITIONS
+**# ==============================================================================
+
+noi di "=== ANALYZING WELFARE QUINTILE TRANSITIONS ==="
+
+* Create quintiles at t0 using weighted distribution
+qui _pctile welfare_daily_t0 [aw=weight], nq(5)
+local p20_t0 = r(r1)
+local p40_t0 = r(r2)
+local p60_t0 = r(r3)
+local p80_t0 = r(r4)
+
+gen quintile_t0 = 1 if welfare_daily_t0 <= `p20_t0'
+replace quintile_t0 = 2 if welfare_daily_t0 > `p20_t0' & welfare_daily_t0 <= `p40_t0'
+replace quintile_t0 = 3 if welfare_daily_t0 > `p40_t0' & welfare_daily_t0 <= `p60_t0'
+replace quintile_t0 = 4 if welfare_daily_t0 > `p60_t0' & welfare_daily_t0 <= `p80_t0'
+replace quintile_t0 = 5 if welfare_daily_t0 > `p80_t0' & !missing(welfare_daily_t0)
+
+* Create quintiles at t1 using weighted distribution
+qui _pctile welfare_daily_t1 [aw=weight], nq(5)
+local p20_t1 = r(r1)
+local p40_t1 = r(r2)
+local p60_t1 = r(r3)
+local p80_t1 = r(r4)
+
+gen quintile_t1 = 1 if welfare_daily_t1 <= `p20_t1'
+replace quintile_t1 = 2 if welfare_daily_t1 > `p20_t1' & welfare_daily_t1 <= `p40_t1'
+replace quintile_t1 = 3 if welfare_daily_t1 > `p40_t1' & welfare_daily_t1 <= `p60_t1'
+replace quintile_t1 = 4 if welfare_daily_t1 > `p60_t1' & welfare_daily_t1 <= `p80_t1'
+replace quintile_t1 = 5 if welfare_daily_t1 > `p80_t1' & !missing(welfare_daily_t1)
+
+label define quintile_lbl 1 "Q1 (Poorest)" 2 "Q2" 3 "Q3" 4 "Q4" 5 "Q5 (Richest)"
+label values quintile_t0 quintile_lbl
+label values quintile_t1 quintile_lbl
+
+preserve
+
+* Calculate weighted transition matrix
+tab quintile_t0 quintile_t1 [aw=weight], matcell(trans_quint_freq)
+
+* Calculate percentages - denominator is sum of matrix cells
+mat trans_quint_pct = trans_quint_freq
+local total_weight = 0
+forval i = 1/5 {
+    forval j = 1/5 {
+        local total_weight = `total_weight' + trans_quint_freq[`i',`j']
+    }
+}
+forval i = 1/5 {
+    forval j = 1/5 {
+        mat trans_quint_pct[`i',`j'] = 100 * trans_quint_freq[`i',`j'] / `total_weight'
+    }
+}
+
+noi di ""
+noi di "Welfare Quintile Transition Matrix (% of total sample):"
+noi mat list trans_quint_pct, format(%9.2f)
+
+* Verify sum
+local sum_check = 0
+forval i = 1/5 {
+    forval j = 1/5 {
+        local sum_check = `sum_check' + trans_quint_pct[`i',`j']
+    }
+}
+noi di "Sum of percentages: " %5.2f `sum_check' "% (should be 100%)"
+
+* Create dataset for export
+clear
+set obs 7
+
+gen str40 variable = ""
+gen q1_t1 = .
+gen q2_t1 = .
+gen q3_t1 = .
+gen q4_t1 = .
+gen q5_t1 = .
+gen str80 notes = ""
+
+replace variable = "Quintile at t0 → Quintile at t1" in 1
+replace variable = "Q1 (Poorest) at t0" in 2
+replace variable = "Q2 at t0" in 3
+replace variable = "Q3 at t0" in 4
+replace variable = "Q4 at t0" in 5
+replace variable = "Q5 (Richest) at t0" in 6
+
+* Fill in transition percentages
+forval i = 1/5 {
+    local row = `i' + 1
+    forval j = 1/5 {
+        replace q`j'_t1 = trans_quint_pct[`i',`j'] in `row'
+    }
+}
+
+replace notes = "Welfare quintiles based on daily income per capita (cohh==1 with non-missing welfare)" in 1
+replace notes = "Values represent % of total sample" in 2
+replace notes = "Quintiles calculated separately for t0 and t1 using weighted distributions" in 3
+
+tempfile quint_results
+save `quint_results'
+
+restore
+
+noi di "Quintile transitions calculated"
+noi di ""
+
+**# ==============================================================================
+**# 9. CREATE SUMMARY STATISTICS SHEET
+**# ==============================================================================
+
+preserve
+
+clear
+set obs 30
+
+gen str50 metric = ""
+gen value = .
+gen str100 description = ""
+
+local row = 1
+
+* General information
+replace metric = "DATASET INFORMATION" in `row'
+local ++row
+
+replace metric = "Dataset" in `row'
+replace description = "$input_panel" in `row'
+local ++row
+
+replace metric = "Time period" in `row'
+replace value = `year_t0' in `row'
+replace description = "`year_t0' to `year_t1'" in `row'
+local ++row
+
+replace metric = "Sample size (individuals)" in `row'
+replace value = `n_individuals' in `row'
+local ++row
+
+replace metric = "Sample size (households)" in `row'
+replace value = `n_households' in `row'
+local ++row
+
+replace metric = "" in `row'
+local ++row
+
+* Poverty lines
+replace metric = "POVERTY LINES" in `row'
+local ++row
+
+replace metric = "LIC poverty line" in `row'
+replace value = $pov_line_lic in `row'
+replace description = "$" + string($pov_line_lic, "%4.2f") + "/day (2021 PPP)" in `row'
+local ++row
+
+replace metric = "LMC poverty line" in `row'
+replace value = $pov_line_lmc in `row'
+replace description = "$" + string($pov_line_lmc, "%4.2f") + "/day (2021 PPP)" in `row'
+local ++row
+
+replace metric = "UMC poverty line" in `row'
+replace value = $pov_line_umc in `row'
+replace description = "$" + string($pov_line_umc, "%4.2f") + "/day (2021 PPP)" in `row'
+local ++row
+
+replace metric = "" in `row'
+local ++row
+
+replace metric = "RELATIVE POVERTY LINES" in `row'
+local ++row
+
+replace metric = "Relative poverty threshold" in `row'
+replace value = $relative_threshold in `row'
+replace description = string($relative_threshold * 100, "%3.0f") + "% of median income" in `row'
+local ++row
+
+replace metric = "Median income at t0" in `row'
+replace value = `median_t0' in `row'
+replace description = "$" + string(`median_t0', "%5.2f") + "/day (2021 PPP)" in `row'
+local ++row
+
+replace metric = "Relative poverty line (t0 median)" in `row'
+replace value = `relative_line_t0' in `row'
+replace description = "$" + string(`relative_line_t0', "%5.2f") + "/day" in `row'
+local ++row
+
+replace metric = "Median income at t1" in `row'
+replace value = `median_t1' in `row'
+replace description = "$" + string(`median_t1', "%5.2f") + "/day (2021 PPP)" in `row'
+local ++row
+
+replace metric = "Relative poverty line (t1 median)" in `row'
+replace value = `relative_line_t1' in `row'
+replace description = "$" + string(`relative_line_t1', "%5.2f") + "/day" in `row'
+local ++row
+
+replace metric = "" in `row'
+local ++row
+
+replace metric = "NOTES" in `row'
+local ++row
+
+replace metric = "Sample restrictions" in `row'
+replace description = "Balanced panel with cohh==1 and non-missing welfare at both periods" in `row'
+local ++row
+
+replace metric = "Welfare conversion" in `row'
+replace description = "Annual welfare divided by 365 to get daily values for comparison with poverty lines" in `row'
+local ++row
+
+replace metric = "Survey weights" in `row'
+replace description = "All calculations use individual weights from t0 (iweight0)" in `row'
+local ++row
+
+replace metric = "Transition matrices" in `row'
+replace description = "All values represent % of total sample; rows=status at t0, columns=status at t1" in `row'
+local ++row
+
+drop if missing(metric) & missing(description)
+
+tempfile summary_results
+save `summary_results'
+
+restore
+
+noi di "Summary statistics compiled"
+noi di ""
+
+**# ==============================================================================
+**# 10. EXPORT ALL RESULTS TO EXCEL
+**# ==============================================================================
+
+noi di "=== EXPORTING RESULTS TO EXCEL ==="
+
+* Start fresh Excel file with summary sheet
+use `summary_results', clear
+export excel metric value description using ///
+    "$output_path/$output_file", ///
+    sheet("Summary", replace) firstrow(variables)
+
+* Export diagnostic poverty rates
+use `diagnostic_rates', clear
+export excel poverty_line year full_sample_rate balanced_panel_rate full_sample_n balanced_panel_n using ///
+    "$output_path/$output_file", ///
+    sheet("Diagnostic_Poverty_Rates", modify) firstrow(variables)
+
+* Export LIC transitions
+use `lic_results', clear
+export excel variable non_poor_t1 poor_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("LIC_3_00", modify) firstrow(variables)
+
+* Export LMC transitions
+use `lmc_results', clear
+export excel variable non_poor_t1 poor_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("LMC_4_20", modify) firstrow(variables)
+
+* Export UMC transitions
+use `umc_results', clear
+export excel variable non_poor_t1 poor_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("UMC_8_30", modify) firstrow(variables)
+
+* Export relative poverty transitions (t0 median)
+use `rel_t0_results', clear
+export excel variable non_poor_t1 poor_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("Relative_50pct_t0", modify) firstrow(variables)
+
+* Export relative poverty transitions (t1 median)
+use `rel_t1_results', clear
+export excel variable non_poor_t1 poor_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("Relative_50pct_t1", modify) firstrow(variables)
+
+* Export quintile transitions
+use `quint_results', clear
+export excel variable q1_t1 q2_t1 q3_t1 q4_t1 q5_t1 notes using ///
+    "$output_path/$output_file", ///
+    sheet("Quintiles", modify) firstrow(variables)
+
+noi di ""
+noi di "=== ANALYSIS COMPLETED SUCCESSFULLY ==="
+noi di ""
+noi di "Results exported to:"
+noi di "$output_path/$output_file"
+noi di ""
+noi di "Excel sheets created:"
+noi di "  1. Summary - Dataset information and poverty line definitions"
+noi di "  2. Diagnostic_Poverty_Rates - Comparison of poverty rates (full vs balanced panel)"
+noi di "  3. LIC_3_00 - Poverty transitions using $3.00/day line"
+noi di "  4. LMC_4_20 - Poverty transitions using $4.20/day line"
+noi di "  5. UMC_8_30 - Poverty transitions using $8.30/day line"
+noi di "  6. Relative_50pct_t0 - Relative poverty using 50% of t0 median ($" %5.2f `relative_line_t0' "/day)"
+noi di "  7. Relative_50pct_t1 - Relative poverty using 50% of t1 median ($" %5.2f `relative_line_t1' "/day)"
+noi di "  8. Quintiles - Welfare quintile mobility matrix"
+noi di ""
