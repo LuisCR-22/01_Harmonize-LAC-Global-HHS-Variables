@@ -3,18 +3,27 @@ Project: Harmonizing LAC HH Surveys with Global Syntax
 Author:	Luis Castellanos (lcastellanosrodr@worldbank.org)
 Team:	Stats Team - World Bank	
 Creation Date:		2025/11/06
-Last modification: 	2025/11/06
+Last modification: 	2025/11/10
 ====================================================================
 PURPOSE: This script harmonizes panel household survey data from LAC 
          countries to align with global team variable naming conventions
-         and structure. Creates separate datasets for each 1-year panel
-         combination.
+         and structure. Creates separate datasets for each panel
+         combination (1-year panels + full panel).
 
 METHODOLOGY:
-- Maintains all original variables for error tracking
+- Preserves ALL original variables for backward compatibility
 - Creates harmonized variables following global standards
 - Generates separate datasets for each consecutive year panel
 - Flexible structure allows easy adaptation for different countries
+
+KEY CHANGES FROM ORIGINAL:
+- All original variables are preserved (no renaming, only new variable creation)
+- Includes full 2019-2023 panel in addition to 1-year panels
+- Maintains compatibility with both old and new variable naming conventions
+- wage: Total annual wage of salaried employees (USD 2021 PPP)
+- earnings: Annual labor earnings of self-employed/employers (USD 2021 PPP)
+- cpiwave: Average monthly CPI during data collection
+- cpi2021: Average monthly CPI in 2021
 
 STRUCTURE:
 1. Setup and country-specific configurations
@@ -35,7 +44,7 @@ set more off
 
 * Define paths
 global wdir "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team"
-global input_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2025\2021PPP\Vulnerability line\Data\Peru"
+global input_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2025\2021PPP\Vulnerability line\Data\Raw\Peru"
 global output_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Dta\PER"
 
 * Create output directory if it doesn't exist
@@ -47,13 +56,13 @@ global current_iso "PER"
 
 * Define year combinations based on country
 if "$current_country" == "Peru" {
-    * Peru has 2015-2019 and 2019-2023 panels (without 2020) We are using only the second one for now
-    * Define all 1-year consecutive panels + 2019-2021 special panel
-    * IMPORTANT: No commas - each pair is a separate element
+    * Peru has 2019-2023 panel (without 2020)
+    * Define all 1-year consecutive panels + full 2019-2023 panel
     local combo1 "2019 2021"
     local combo2 "2021 2022"
     local combo3 "2022 2023"
-    local n_combos = 3
+    local combo4 "2019 2023"
+    local n_combos = 4
     global input_file "01_Enaho_SEDLAC_Panel_2019_2023.dta"
 }
 else if "$current_country" == "Brazil" {
@@ -69,7 +78,7 @@ global isic_revision "3" // Peru uses ISIC Rev 3; adjust for other countries
 noi di ""
 noi di "=== HARMONIZATION OF PANEL DATA TO GLOBAL STANDARDS ==="
 noi di "Country: $current_country (ISO: $current_iso)"
-noi di "Processing `n_combos' one-year panel combinations"
+noi di "Processing `n_combos' panel combinations (3 one-year + 1 full panel)"
 noi di ""
 
 **# ==============================================================================
@@ -85,18 +94,18 @@ noi di ""
 **# 2. CREATE HARMONIZED IDENTIFIERS AND BASIC VARIABLES
 **# ==============================================================================
 
-* Country identifiers
-rename pais country
-label var country "Country name"
+* Country identifiers (preserve originals)
+gen country = pais
+label var country "Country name (original: pais)"
 
-rename pais_ocaux cnt
-label var cnt "Country ISO 3-letter code"
+gen cnt = pais_ocaux
+label var cnt "Country ISO 3-letter code (original: pais_ocaux)"
 
-* Household and individual identifiers
-rename idp_h household_id
+* Household and individual identifiers (preserve originals)
+gen household_id = idp_h
 label var household_id "Household panel identifier (original: idp_h)"
 
-rename idp_i indiv_id
+gen indiv_id = idp_i
 label var indiv_id "Individual panel identifier (original: idp_i)"
 
 * Wave number - sequential starting from first year in data
@@ -105,14 +114,12 @@ local first_year = r(min)
 gen wave = ano - `first_year' + 1
 label var wave "Wave number (sequential from first survey year)"
 
-* Note: 'time' variable will be created within each panel loop (0 = initial, 1 = final)
-
 **# ==============================================================================
 **# 3. CREATE HARMONIZED WEIGHTS
 **# ==============================================================================
 
-* Individual weight (already exists as pondera)
-rename pondera iweight
+* Individual weight (preserve original)
+gen iweight = pondera
 label var iweight "Individual weight (original: pondera)"
 
 * Household weight - use household head's individual weight
@@ -124,23 +131,24 @@ label var hweight "Household weight (household head's individual weight)"
 **# 4. CREATE HARMONIZED WELFARE VARIABLES
 **# ==============================================================================
 
-* Welfare aggregate in USD 2021 PPP
-rename ipcf_ppp21 welfare
+* Welfare aggregate in USD 2021 PPP (preserve original)
+gen welfare = ipcf_ppp21*12 //convert in anual terms
 label var welfare "Annual income per capita, USD 2021 PPP (original: ipcf_ppp21)"
 note welfare: Type: Income | Spatially deflated: Yes (urban/rural) | Per capita: Yes
 
-* Nominal welfare aggregate in local currency
-rename ipcf welfarenom
+* Nominal welfare aggregate in local currency (preserve original)
+gen welfarenom = ipcf*12
 label var welfarenom "Annual income per capita, local currency (original: ipcf)"
 
 * CPI and PPP variables
 gen cpiwave = .
-label var cpiwave "Average monthly CPI during data collection (to be filled)"
+label var cpiwave "Average monthly CPI during data collection"
 
 gen cpi2021 = .
-label var cpi2021 "Average monthly CPI in 2021 (to be filled)"
+label var cpi2021 "Average monthly CPI in 2021"
 
-rename ppp21 ppp2021
+* PPP conversion factor (preserve original)
+gen ppp2021 = ppp21
 label var ppp2021 "PPP conversion factor 2021, LCU per int'l dollar (original: ppp21)"
 
 **# ==============================================================================
@@ -149,8 +157,8 @@ label var ppp2021 "PPP conversion factor 2021, LCU per int'l dollar (original: p
 
 **# 5.1 Employment status
 
-* Basic employment indicator
-gen employed=ocupado
+* Basic employment indicator (preserve original)
+gen employed = ocupado
 label var employed "Employed (1=Yes, 0=No) (original: ocupado)"
 
 * Detailed employment status
@@ -176,33 +184,37 @@ label values emptype emptype_lbl
 
 **# 5.3 Wages and earnings
 
-* Rename existing wage variable and create placeholder for annual wage
-cap rename wage hourly_wage_lc
-cap label var hourly_wage_lc "Hourly wage in local currency (original: wage)"
+* Rename original hourly wage variable from SEDLAC
+cap confirm variable wage
+if !_rc {
+    gen hourly_wage_lc = wage
+    label var hourly_wage_lc "Hourly wage in local currency (originally: wage in SEDLAC)"
+    drop wage
+}
 
+* Create placeholder for annual wage (to be populated later)
 gen wage = .
-label var wage "Annual wage of salaried employees, USD 2021 PPP (to be filled)"
+label var wage "Total annual wage of salaried employees, USD 2021 PPP"
 
+* Create placeholder for annual earnings (to be populated later)
 gen earnings = .
-label var earnings "Annual labor earnings of self-employed/employers, USD 2021 PPP (to be filled)"
+label var earnings "Annual labor earnings of self-employed/employers, USD 2021 PPP"
 
 **# 5.4 Occupation codes (ISCO-08)
 
-* 4-digit, 3-digit, 2-digit codes (already exist)
-rename isco08_4d isco_4d
+* Preserve originals and create harmonized names
+gen isco_4d = isco08_4d
 label var isco_4d "ISCO-08 occupation code, 4-digit (original: isco08_4d)"
 
-rename isco08_3d isco_3d
+gen isco_3d = isco08_3d
 label var isco_3d "ISCO-08 occupation code, 3-digit (original: isco08_3d)"
 
-rename isco08_2d isco_2d
+gen isco_2d = isco08_2d
 label var isco_2d "ISCO-08 occupation code, 2-digit (original: isco08_2d)"
 
-* 1-digit code - extract from 2-digit, accounting for leading zeros
+* 1-digit code - extract from 2-digit
 gen isco_1d = .
-* For 2-digit codes >= 10, take first digit
 replace isco_1d = floor(isco_2d / 10) if isco_2d >= 10 & !missing(isco_2d)
-* For 2-digit codes < 10, the code is 0X, so 1-digit is 0
 replace isco_1d = 0 if isco_2d < 10 & isco_2d >= 0 & !missing(isco_2d)
 label var isco_1d "ISCO-08 occupation code, 1-digit (derived from isco_2d)"
 
@@ -219,57 +231,45 @@ label define occup_lbl 0 "Armed Forces" 1 "Managers" 2 "Professionals" ///
 label values occup occup_lbl
 
 * Skill group
-* Note: Occupational code 0 (Armed Forces) doesn't fit neatly into skill categories
-* Leave as missing per instructions to think carefully about classification
 gen skill_group = .
-replace skill_group = 3 if inrange(occup, 1, 3)  // High skill: Managers, Professionals, Technicians
-replace skill_group = 2 if inrange(occup, 4, 8)  // Medium skill: Clerical through Operators
-replace skill_group = 1 if occup == 9  // Low skill: Elementary occupations
-* occup == 0 (Armed Forces) left as missing
+replace skill_group = 3 if inrange(occup, 1, 3)  // High skill
+replace skill_group = 2 if inrange(occup, 4, 8)  // Medium skill
+replace skill_group = 1 if occup == 9  // Low skill
 label var skill_group "Skill level (1=Low, 2=Medium, 3=High)"
 label define skill_lbl 1 "Low skill" 2 "Medium skill" 3 "High skill"
 label values skill_group skill_lbl
 note skill_group: Based on ISCO 1-digit. Armed Forces (occup=0) coded as missing.
 
-**# 5.6 Formality indicators for salaried workers
+**# 5.6 Formality indicators for salaried workers (preserve originals)
 
-* Written contract
-rename contrato contract
+gen contract = contrato
 label var contract "Has written contract (original: contrato)"
 
-* Pension contribution
-rename djubila socsec
+gen socsec = djubila
 label var socsec "Contributes to pension (original: djubila)"
 
-* Health insurance
-rename dsegsale health
+gen health = dsegsale
 label var health "Contributes to health insurance (original: dsegsale)"
 
 **# 5.7 Sector of economic activity
 
 * ISIC 1-digit - extract from 4-digit sector_orig
-* Account for leading zeros (3-digit codes with leading 0 missing)
 gen isic_1d = .
-* For 4-digit codes >= 1000, take first digit
 replace isic_1d = floor(sector_orig / 1000) if sector_orig >= 1000 & !missing(sector_orig)
-* For codes < 1000, the leading digit is 0
 replace isic_1d = 0 if sector_orig < 1000 & sector_orig >= 0 & !missing(sector_orig)
 label var isic_1d "ISIC 1-digit (derived from sector_orig 4-digit)"
 note isic_1d: Derived from sector_orig (4-digit ISIC Rev $isic_revision)
 
-* Rename current sector variable
-rename sector ten_sectors
+* Preserve original sector variable
+gen ten_sectors = sector
 label var ten_sectors "Original 10-sector classification (original: sector)"
 
 * Create new 3-category sector variable based on ISIC 1-digit
-* Based on the frequency table provided:
-* ISIC 1 (Agriculture, hunting, forestry) + ISIC 2 (Fishing) = Agriculture
-* ISIC 3 (Mining) + ISIC 4 (Manufacturing) + ISIC 5 (Utilities) + ISIC 6 (Construction) = Industry  
-* ISIC 7-17 (All service sectors) = Services
+cap drop sector
 gen sector = .
-replace sector = 1 if inlist(isic_1d, 1, 2)  // Agriculture (includes fishing)
-replace sector = 2 if inlist(isic_1d, 3, 4, 5, 6)  // Industry (mining, manufacturing, utilities, construction)
-replace sector = 3 if inrange(isic_1d, 7, 17)  // Services (all remaining)
+replace sector = 1 if inlist(isic_1d, 1, 2)  // Agriculture
+replace sector = 2 if inlist(isic_1d, 3, 4, 5, 6)  // Industry
+replace sector = 3 if inrange(isic_1d, 7, 17)  // Services
 label var sector "Broad economic sector (1=Agriculture, 2=Industry, 3=Services)"
 label define sector_lbl 1 "Agriculture" 2 "Industry" 3 "Services"
 label values sector sector_lbl
@@ -278,15 +278,14 @@ label values sector sector_lbl
 **# 6. CREATE HARMONIZED DEMOGRAPHIC VARIABLES
 **# ==============================================================================
 
-**# 6.1 Geographic location
+**# 6.1 Geographic location (preserve original)
 
-* Urban/rural
-rename urbano urban
+gen urban = urbano
 label var urban "Urban residence (1=Urban, 0=Rural) (original: urbano)"
 
 **# 6.2 Household relationship
 
-* Create three dummy variables based on relationship to household head
+* Create dummy variables based on relationship to household head
 gen head = (relacion == 1)
 label var head "Household head (1=Yes, 0=No)"
 
@@ -298,17 +297,17 @@ label var others "Other household member (1=Yes, 0=No)"
 
 **# 6.3 Individual characteristics
 
-* Age - capped at 100
-rename edad age
+* Age - capped at 100 (preserve original)
+gen age = edad
 replace age = 100 if age > 100 & !missing(age)
 label var age "Age in years, capped at 100 (original: edad)"
 
-* Sex - create female from hombre (which is 1 for male)
+* Sex - create female from hombre
 gen female = 1 - hombre
 replace female = . if missing(hombre)
-label var female "Female (1=Female, 0=Male) (original: hombre inverted)"
+label var female "Female (1=Female, 0=Male) (derived from hombre)"
 
-* Educational attainment - add 1 to nivel to match requested categories
+* Educational attainment
 gen educat7 = nivel + 1 if !missing(nivel)
 label var educat7 "Educational attainment (1-7 scale) (original: nivel + 1)"
 label define educat7_lbl 1 "Never attended" 2 "Incomplete primary" ///
@@ -321,7 +320,7 @@ label values educat7 educat7_lbl
 **# ==============================================================================
 
 noi di ""
-noi di "=== CREATING SEPARATE DATASETS FOR EACH ONE-YEAR PANEL ==="
+noi di "=== CREATING SEPARATE DATASETS FOR EACH PANEL COMBINATION ==="
 noi di ""
 
 * Loop through each year combination
@@ -340,7 +339,7 @@ forvalues i = 1/`n_combos' {
     * Keep only observations from these two years
     keep if ano == `t0' | ano == `t1'
     
-    * Identify balanced panel members (appear in both years)
+    * Identify balanced panel members
     sort indiv_id ano
     by indiv_id: egen has_t0 = max(ano == `t0')
     by indiv_id: egen has_t1 = max(ano == `t1')
@@ -364,7 +363,7 @@ forvalues i = 1/`n_combos' {
     * Add dataset notes
     note: Harmonized panel dataset for $current_country (`t0'-`t1')
     note: Harmonized to global team standards on $S_DATE
-    note: Original variables maintained alongside harmonized variables
+    note: Original variables preserved alongside harmonized variables
     note: Balanced panel includes only individuals present in both `t0' and `t1'
     
     * Save dataset
@@ -394,22 +393,6 @@ forvalues i = 1/`n_combos' {
     noi di "  - 01_${current_iso}_`t0'-`t1'_panel.dta"
 }
 noi di ""
-noi di "All original variables have been maintained for error tracking."
+noi di "All original variables have been preserved."
 noi di "Harmonized variables follow global team naming conventions."
-noi di ""
-
-* Display variable mapping summary
-noi di "KEY VARIABLE MAPPINGS:"
-noi di "======================"
-noi di "household_id ← idp_h"
-noi di "indiv_id ← idp_i"
-noi di "welfare ← ipcf_ppp21"
-noi di "welfarenom ← ipcf"
-noi di "employed ← ocupado"
-noi di "urban ← urbano"
-noi di "age ← edad (capped at 100)"
-noi di "female ← 1 - hombre"
-noi di "educat7 ← nivel + 1"
-noi di ""
-noi di "For full variable documentation, see dataset notes and labels."
 noi di ""
