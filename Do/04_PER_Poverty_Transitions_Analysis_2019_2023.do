@@ -7,8 +7,6 @@ Last modification: 	2025/11/10
 ====================================================================
 PURPOSE: This script analyzes poverty transitions across different poverty
          lines using harmonized panel household survey data from LAC countries.
-         Unlike the López-Calva & Ortiz-Juarez vulnerability methodology,
-         this focuses exclusively on transition matrices and mobility patterns.
 
 METHODOLOGY:
 - Analyzes poverty transitions using multiple absolute poverty lines:

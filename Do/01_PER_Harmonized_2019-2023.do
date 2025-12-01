@@ -33,6 +33,11 @@ STRUCTURE:
 5. Create harmonized employment variables
 6. Create harmonized demographic variables
 7. Loop through year combinations and save separate datasets
+
+CPI:
+API code to use IMF CPI: 
+getTimeSeries IMF_DATA CPI/ARG+SLV+DOM+BRA+PER.CPI._T.IX.M "" "" 0 0, clear
+Clear instructions in: https://datasupport.imf.org/knowledge?id=knowledge_category&sys_kb_id=b968d02b47294ad8805d07c4f16d438d&category_id=9959b2bc1b6391903dba646fbd4bcb6a
 *=================================================================*/
 
 clear all
