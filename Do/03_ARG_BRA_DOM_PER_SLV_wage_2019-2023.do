@@ -828,6 +828,7 @@ forvalues i = 1/`n_combos' {
     noi di ""
     
     * Save updated dataset (overwrites original)
+	compress
     save "$output_data/01_${current_iso}_`t0'-`t1'_panel.dta", replace
     noi di "  ✓ Dataset saved: 01_${current_iso}_`t0'-`t1'_panel.dta"
     noi di ""

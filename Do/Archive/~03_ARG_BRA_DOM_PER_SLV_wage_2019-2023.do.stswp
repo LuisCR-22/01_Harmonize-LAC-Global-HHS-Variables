@@ -10,6 +10,7 @@ PURPOSE: This script creates annual wage and earnings variables in USD 2021 PPP
          of each (IMF CPI and SEDLAC CPI) for comparison purposes.
          
          UPDATED: Now works for all 5 LAC countries with country selection macro.
+         FIXED: Handles DOM string hours variables and clears between iterations.
 
 METHODOLOGY:
 - WAGE: For salaried employees only (emptype==3)
@@ -53,7 +54,7 @@ set more off
 ***********************************************
 *** CHANGE THIS MACRO TO SELECT COUNTRY   ***
 ***********************************************
-global country_selection "DOM"  
+*global country_selection "BRA"  
 * Options: "PER" (Peru), "ARG" (Argentina), "BRA" (Brazil), "DOM" (Dominican Republic), or "SLV" (El Salvador)
 ***********************************************
 
@@ -152,7 +153,6 @@ forvalues i = 1/`n_combos' {
     tokenize `combo`i''
     local t0 = `1'
     local t1 = `2'
-	
     
     noi di "==============================================================================="
     noi di "Processing: 01_${current_iso}_`t0'-`t1'_panel.dta"
@@ -174,14 +174,17 @@ forvalues i = 1/`n_combos' {
     
     * Store original number of observations
     local n_total = _N
-	
-	**# =========================================================================
+    
+    **# =========================================================================
 	**# COUNTRY-SPECIFIC DATA FIXES
 	**# =========================================================================
 
 	* Fix for Dominican Republic: Convert string hours variables to numeric
 	if "$current_iso" == "DOM" {
 		noi di "Applying DOM-specific fix: Converting string hours variables to numeric..."
+		
+		* CRITICAL FIX: Drop any existing temporary variables from previous runs
+		cap drop __*
 		
 		* Check if hstrt is string (only convert if string)
 		local converted = 0
@@ -207,6 +210,9 @@ forvalues i = 1/`n_combos' {
 			label var hstrs "Hours worked in secondary occupation"
 			local converted = 1
 		}
+		
+		* Clean up any temporary variables created by destring
+		cap drop __*
 		
 		if `converted' == 1 {
 			qui count if missing(hstrt) & emptype == 3
@@ -683,6 +689,63 @@ forvalues i = 1/`n_combos' {
         
     }
     
+	**# =========================================================================
+    **# COUNTRY-SPECIFIC POST-PROCESSING: ARGENTINA
+    **# =========================================================================
+    
+    * For Argentina: Use SEDLAC CPI as primary (global team preference)
+    if "$current_iso" == "ARG" {
+        noi di ""
+        noi di "==========================================================================="
+        noi di "APPLYING ARGENTINA-SPECIFIC VARIABLE ADJUSTMENTS"
+        noi di "==========================================================================="
+        noi di ""
+        noi di "For ARG, global team uses SEDLAC CPI as primary measure."
+        noi di "Renaming variables:"
+        noi di "  • wage → wage_imf (alternative measure)"
+        noi di "  • wage_sedlac → wage (primary measure)"
+        noi di "  • earnings → earnings_imf (alternative measure)"
+        noi di "  • earnings_sedlac → earnings (primary measure)"
+        noi di ""
+        
+        * Rename IMF-based variables to _imf versions
+        cap confirm variable wage
+        if !_rc {
+            rename wage wage_imf
+            label var wage_imf "Annual wage, USD 2021 PPP (salaried, IMF CPI - alternative for ARG)"
+            note wage_imf: Alternative measure for Argentina using IMF CPI
+            note wage_imf: For ARG analysis, use 'wage' (SEDLAC-based) as primary measure
+        }
+        
+        cap confirm variable earnings
+        if !_rc {
+            rename earnings earnings_imf
+            label var earnings_imf "Annual earnings, USD 2021 PPP (self-emp/employers, IMF CPI - alternative for ARG)"
+            note earnings_imf: Alternative measure for Argentina using IMF CPI
+            note earnings_imf: For ARG analysis, use 'earnings' (SEDLAC-based) as primary measure
+        }
+        
+        * Rename SEDLAC-based variables to primary versions
+        cap confirm variable wage_sedlac
+        if !_rc {
+            gen wage=wage_sedlac
+            label var wage "Annual wage, USD 2021 PPP (salaried, SEDLAC CPI - primary for ARG)"
+            note wage: Primary measure for Argentina using SEDLAC CPI
+            note wage: Global team standard for ARG. IMF-based alternative available as 'wage_imf'
+        }
+        
+        cap confirm variable earnings_sedlac
+        if !_rc {
+            gen earnings=earnings_sedlac
+            label var earnings "Annual earnings, USD 2021 PPP (self-emp/employers, SEDLAC CPI - primary for ARG)"
+            note earnings: Primary measure for Argentina using SEDLAC CPI
+            note earnings: Global team standard for ARG. IMF-based alternative available as 'earnings_imf'
+        }
+        
+        noi di "  ✓ Variables renamed successfully"
+        noi di ""
+    }
+	
     **# =========================================================================
     **# FINAL SUMMARY AND SAVE
     **# =========================================================================
@@ -764,14 +827,15 @@ forvalues i = 1/`n_combos' {
     noi di "  " _dup(80) "-"
     noi di ""
     
-	* Save updated dataset (overwrites original)
+    * Save updated dataset (overwrites original)
+	compress
     save "$output_data/01_${current_iso}_`t0'-`t1'_panel.dta", replace
     noi di "  ✓ Dataset saved: 01_${current_iso}_`t0'-`t1'_panel.dta"
     noi di ""
     noi di "  " _dup(75) "-"
     noi di ""
     
-    * Clear dataset to reset Stata completely between iterations
+    * Clear dataset completely to reset Stata between iterations
     clear
 }
 
