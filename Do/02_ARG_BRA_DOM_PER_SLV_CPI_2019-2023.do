@@ -33,7 +33,7 @@ set more off
 ***********************************************
 *** CHANGE THIS MACRO TO SELECT COUNTRY   ***
 ***********************************************
-global country_selection "PER"  
+*global country_selection "PER"  
 * Options: "PER" (Peru), "ARG" (Argentina), "BRA" (Brazil), "DOM" (Dominican Republic), or "SLV" (El Salvador)
 ***********************************************
 

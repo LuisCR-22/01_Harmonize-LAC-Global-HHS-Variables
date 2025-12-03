@@ -15,13 +15,11 @@ METHODOLOGY:
 - Creates harmonized variables following global standards
 - Generates separate datasets for each consecutive year panel
 - Flexible structure allows easy adaptation for different countries
+
+KEY CHANGES FROM ORIGINAL:
 - All original variables are preserved (no renaming, only new variable creation)
 - Includes full 2019-2023 panel in addition to 1-year panels
 - Maintains compatibility with both old and new variable naming conventions
-- iweight and hweight are identical because in SEDLAC household surveys, 
-	all members of the same household share the same weight (pondera).
-
-PLACEHOLDER VARIABLES (to be populated in later stages):
 - wage: Total annual wage of salaried employees (USD 2021 PPP)
 - earnings: Annual labor earnings of self-employed/employers (USD 2021 PPP)
 - cpiwave: Average monthly CPI during data collection
@@ -46,8 +44,8 @@ set more off
 
 * Define paths
 global wdir "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team"
-global input_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2025\2021PPP\Vulnerability line\Data\Peru"
-global output_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Dta"
+global input_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2025\2021PPP\Vulnerability line\Data\Raw\Peru"
+global output_data "C:\Users\wb593225\OneDrive - WBG\Desktop\Shared\FY2026\03_Global_team\Dta\PER"
 
 * Create output directory if it doesn't exist
 cap mkdir "$output_data"
@@ -134,12 +132,12 @@ label var hweight "Household weight (household head's individual weight)"
 **# ==============================================================================
 
 * Welfare aggregate in USD 2021 PPP (preserve original)
-gen welfare = ipcf_ppp21
+gen welfare = ipcf_ppp21*12 //convert in anual terms
 label var welfare "Annual income per capita, USD 2021 PPP (original: ipcf_ppp21)"
 note welfare: Type: Income | Spatially deflated: Yes (urban/rural) | Per capita: Yes
 
 * Nominal welfare aggregate in local currency (preserve original)
-gen welfarenom = ipcf
+gen welfarenom = ipcf*12
 label var welfarenom "Annual income per capita, local currency (original: ipcf)"
 
 * CPI and PPP variables
@@ -267,8 +265,6 @@ gen ten_sectors = sector
 label var ten_sectors "Original 10-sector classification (original: sector)"
 
 * Create new 3-category sector variable based on ISIC 1-digit
-rename sector sector_10_cat
-label var sector_10_cat "Activity Sector: 10 categories, originally sector in SEDLAC"
 cap drop sector
 gen sector = .
 replace sector = 1 if inlist(isic_1d, 1, 2)  // Agriculture
